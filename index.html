@@ -1046,18 +1046,6 @@ function start(){
     });
   },e=>{console.error('players listen',e);werr='읽기:'+String((e&&(e.code||e.message))||e).slice(0,28)});
 
-  /* 접속자 안내 칩: 같은 공간에 몇 명, 다른 공간에 누가 있는지 */
-  const chip=document.createElement('div');
-  chip.style.cssText='position:fixed;left:8px;top:calc(env(safe-area-inset-top,0px) + 62px);z-index:7;font-size:12px;line-height:1.35;color:#ffe3a8;background:rgba(30,20,20,.72);border:1px solid rgba(255,200,140,.35);border-radius:10px;padding:4px 8px;pointer-events:none;max-width:60vw';
-  document.body.appendChild(chip);
-  const ZNM=['야외 포차','실내 술집','풍경카페'];
-  setInterval(()=>{
-    const now=Date.now(); let here=0; const other=[];
-    Object.keys(R).forEach(id=>{const r=R[id]; if(r.gone||now-r.ts>STALE_MS)return; if(r.zn===zone)here++; else other.push((r.C.nm||'손님')+'('+(ZNM[r.zn]||'?')+')')});
-    chip.textContent='👥 이 공간 '+(here+1)+'명'+(other.length?' · 다른 공간: '+other.slice(0,3).join(', ')+(other.length>3?' 외 '+(other.length-3)+'명':''):'')
-    let rec=0; Object.keys(PD).forEach(id=>{const x=PD[id]; if(x&&!x.gone&&now-(x.ts||0)<STALE_MS&&Array.isArray(x.dsh))rec+=x.dsh.length});
-    chip.textContent+=(werr?' · ⚠ '+werr:'')+' · 🍽 내 '+ownCount+' / 받은기록 '+rec+' / 표시 '+prevRemote.size;
-  },1000);
   requestAnimationFrame(tick);
   setInterval(()=>{try{syncDishes()}catch(e){console.error('dish sync',e)}},700);
   setInterval(()=>{ const n=Date.now(); Object.keys(R).forEach(id=>{ if(n-R[id].ts>STALE_MS||R[id].gone)hide(id,true) }) },3000);
