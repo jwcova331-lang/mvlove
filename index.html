@@ -1013,7 +1013,7 @@ function wait(){ if(typeof P!=='undefined'&&P){start();return} setTimeout(wait,5
 function start(){
   if(started)return; started=true;
   /* 내 정보 보내기 */
-  let last={x:1e9,z:1e9,ry:0,sit:null,zn:-1}, lastSend=0, lastLook='', lastP=null;
+  let last={x:1e9,z:1e9,ry:0,sit:null,zn:-1}, lastSend=0, lastLook='', lastP=null, lastDshSend=0;
   setInterval(()=>{
     if(document.hidden||typeof P==='undefined'||!P)return;
     const now=Date.now(), p=P.g.position;
@@ -1021,13 +1021,13 @@ function start(){
     const lk=sig(look());
     const lookChanged=lk!==lastLook || P!==lastP;
     const dl=ownDishes(), ds=sig(dl), dshChanged=ds!==lastDsh;
-    if(!moved && !lookChanged && !dshChanged && now-lastSend<HEARTBEAT_MS)return;
+    if(!moved && !lookChanged && !dshChanged && now-lastSend<HEARTBEAT_MS)return;   // (음식은 변화가 있을 때와 20초마다 보냄)
     const np=Object.keys(R).length, gap=np<=10?700:np<=25?1200:2000;   // 사람이 많을수록 덜 자주 보냄
     if(now-lastSend<gap)return;
     lastSend=now; last={x:p.x,z:p.z,ry:P.ry,sit:!!P.sit,zn:zone};
     const data={nick,ts:now,x:+p.x.toFixed(2),y:+p.y.toFixed(2),z:+p.z.toFixed(2),ry:+P.ry.toFixed(2),sit:!!P.sit,zn:zone,gone:false};
     if(lookChanged){data.lk=lk;lastLook=lk;lastP=P}
-    if(dshChanged){data.dsh=dl;lastDsh=ds}
+    if(dshChanged||now-lastDshSend>20000){data.dsh=dl;lastDsh=ds;lastDshSend=now}
     db.doc('players/'+me).set(data,{merge:true}).catch(()=>{});
   },400);
   /* 앱을 내리면 '자리 비움' 처리 */
@@ -1045,18 +1045,48 @@ function start(){
       upsert(id,x);
     });
   },e=>console.error('players listen',e));
+
+  /* 접속자 안내 칩: 같은 공간에 몇 명, 다른 공간에 누가 있는지 */
+  const chip=document.createElement('div');
+  chip.style.cssText='position:fixed;left:8px;top:calc(env(safe-area-inset-top,0px) + 62px);z-index:7;font-size:12px;line-height:1.35;color:#ffe3a8;background:rgba(30,20,20,.72);border:1px solid rgba(255,200,140,.35);border-radius:10px;padding:4px 8px;pointer-events:none;max-width:60vw';
+  document.body.appendChild(chip);
+  const ZNM=['야외 포차','실내 술집','풍경카페'];
+  setInterval(()=>{
+    const now=Date.now(); let here=0; const other=[];
+    Object.keys(R).forEach(id=>{const r=R[id]; if(r.gone||now-r.ts>STALE_MS)return; if(r.zn===zone)here++; else other.push((r.C.nm||'손님')+'('+(ZNM[r.zn]||'?')+')')});
+    chip.textContent='👥 이 공간 '+(here+1)+'명'+(other.length?' · 다른 공간: '+other.slice(0,3).join(', ')+(other.length>3?' 외 '+(other.length-3)+'명':''):'');
+  },1000);
   requestAnimationFrame(tick);
   setInterval(()=>{try{syncDishes()}catch(e){console.error('dish sync',e)}},700);
   setInterval(()=>{ const n=Date.now(); Object.keys(R).forEach(id=>{ if(n-R[id].ts>STALE_MS||R[id].gone)hide(id,true) }) },3000);
+}
+
+/* ---- 의자 공유: 앉은 사람 자리는 막고, 몸이 겹치지 않게 밀어내기 ---- */
+let seatT=0;
+function seatSync(n){
+  if(n-seatT<250)return; seatT=n;
+  CH.forEach(s=>{ if(s.o===2)s.o=null });
+  const now=Date.now();
+  Object.keys(R).forEach(id=>{
+    const r=R[id]; if(!r.sit||r.gone||now-r.ts>STALE_MS)return;
+    let best=null,bd=.5;
+    CH.forEach(s=>{const d=Math.hypot(s.x-r.tx,s.z-r.tz);if(d<bd){bd=d;best=s}});
+    if(!best)return;
+    if(best===seat){
+      if(id<me&&!act){ $('bSit').onclick(); toast('다른 손님이 먼저 앉았어요. 다른 자리에 앉아 주세요') }   // 동시에 앉으면 uid가 작은 쪽이 우선
+    }else if(!best.o)best.o=2;
+  });
 }
 
 /* ---- 테이블 음식 공유 ---- */
 function ownDishes(){
   const out=[];
   TB.forEach((t,ti)=>t.sl.forEach((sl,si)=>{
-    const d=sl.it; if(!d)return;
-    if(!d.nid&&!d.rid)d.nid=me+'-'+(++dn)+'-'+Date.now().toString(36);
-    out.push({i:d.nid||d.rid,ti,si,k:d.m.k,l:d.left});
+    try{
+      const d=sl.it; if(!d||!d.m||!d.m.k)return;
+      if(!d.nid&&!d.rid)d.nid=me+'-'+(++dn)+'-'+Date.now().toString(36);
+      out.push({i:d.nid||d.rid,ti,si,k:String(d.m.k),n:String(d.m.n||''),e:String(d.m.e||''),p:+d.m.p||0,t:d.m.t==='drink'?'drink':'eat',l:(+d.left)||0});
+    }catch(err){console.error('dish list',err)}
   }));
   return out;
 }
@@ -1069,8 +1099,8 @@ function syncDishes(){
     x.dsh.forEach(r=>{
       if(!r||typeof r.i!=='string'||typeof r.l!=='number')return;
       const own=r.i.startsWith(uid+'-'), e=eff[r.i];
-      if(!e)eff[r.i]={i:r.i,ti:r.ti,si:r.si,k:r.k,l:r.l,own};
-      else{e.l=Math.min(e.l,r.l);if(own){e.ti=r.ti;e.si=r.si;e.k=r.k;e.own=true}}
+      if(!e)eff[r.i]={i:r.i,ti:r.ti,si:r.si,k:r.k,n:r.n,e:r.e,p:r.p,t:r.t,l:r.l,own};
+      else{e.l=Math.min(e.l,r.l);if(own){e.ti=r.ti;e.si=r.si;e.k=r.k;e.n=r.n;e.e=r.e;e.p=r.p;e.t=r.t;e.own=true}}
     });
   });
   const here={};
@@ -1086,7 +1116,8 @@ function syncDishes(){
   Object.keys(eff).forEach(id=>{
     const e=eff[id];
     if(!e.own||here[id]||ignored.has(id)||e.l<=0)return;
-    const m=MENU.find(m=>m.k===e.k), t=TB[e.ti]; if(!m||!t)return;
+    let m=MENU.find(x=>x.k===e.k); if(!m&&e.t)m={k:e.k,n:e.n||'',e:e.e||'',p:e.p||0,t:e.t};   // 카페 메뉴처럼 MENU에 없는 것도 복원
+    const t=TB[e.ti]; if(!m||!t||typeof B[m.k]!=='function')return;
     const eat=m.t==='eat', ok=(x,k)=>!x.it&&(eat?k<3:k>=3);
     let sl=t.sl[e.si]; if(!(sl&&ok(sl,e.si)))sl=t.sl.find((x,k)=>ok(x,k));
     if(!sl)return;
@@ -1124,11 +1155,13 @@ function tick(){
   const n=performance.now(), dt=Math.min((n-lt)/1000,.05); lt=n;
   const pp=P.g.position, ids=Object.keys(R);
   if(n-allowT>500){allowT=n;allow=ids.length>30?new Set(ids.map(id=>{const q=R[id].C.g.position;return[id,(q.x-pp.x)**2+(q.z-pp.z)**2]}).sort((a,b)=>a[1]-b[1]).slice(0,30).map(a=>a[0])):null}
+  seatSync(n);
   ids.forEach(id=>{
     const r=R[id], C=r.C, p=C.g.position;
     const vis=(r.zn===zone)&&!r.gone&&(!allow||allow.has(id));
     C.g.visible=vis; C.lb.style.display=vis?'':'none';
     if(!vis)return;
+    if(!seat&&!P.sit){const ox=pp.x-p.x,oz=pp.z-p.z,od=Math.hypot(ox,oz),lim=r.sit?.65:.8;if(od<lim&&od>.001){const ps=Math.min(.06,(lim-od)*.5);pp.x+=ox/od*ps;pp.z+=oz/od*ps}}   // 서 있을 때 다른 사람과 몸이 겹치면 살짝 밀려남
     const dx=r.tx-p.x, dz=r.tz-p.z, d=Math.hypot(dx,dz);
     if(d>6){p.x=r.tx;p.z=r.tz}                 // 너무 멀면 순간이동
     else{const k=Math.min(1,dt*Math.max(1.5,Math.min(8,4500/Math.max(500,r.gap||800))));p.x+=dx*k;p.z+=dz*k}
