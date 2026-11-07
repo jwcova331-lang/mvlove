@@ -457,7 +457,7 @@ function loop(){requestAnimationFrame(loop);const dt=Math.min(clk.getDelta(),.05
  pose(P,dt,mv);pose(NPC,dt,NPC.mv);
  if(dist(P.g.position,NPC.g.position)<3.5&&tm-greet>40&&!NPC.go){greet=tm;say(NPC,'어서 오세요!');NPC.arm[1].rotation.z=-2.3;setTimeout(()=>NPC.arm[1].rotation.z=.12,900)}
  TB.forEach(t=>t.sl.forEach(s=>{const u=s.it&&s.it.g.userData;if(u&&u.steam&&s.it.left>0){u.steam.forEach((m,i)=>{const k=(tm*.5+i/3)%1;m.position.y=.4+k*.6;m.material.opacity=.2*(1-k);m.scale.setScalar(.7+k)});u.boil.forEach((m,i)=>m.position.y=.28+Math.abs(Math.sin(tm*6+i*2))*.05)}else if(u&&u.steam){u.steam.forEach(m=>m.visible=false);u.boil.forEach(m=>m.visible=false)}}));
- const p=P.g.position,cx=ZN[zone].ox+(p.x-ZN[zone].ox)*.8;cam.position.set(cx+Math.sin(yaw)*10.5*zoom,10.5*zoom,p.z*.8+Math.cos(yaw)*10.5*zoom);cam.lookAt(cx,Math.max(0,1.2*(1-zoom)),p.z*.8);
+ const p=P.g.position,cx=ZN[zone].ox+(p.x-ZN[zone].ox)*.8;{const pa=window.CAMP||.7854,R0=14.85*zoom,hr=R0*Math.cos(pa),hh=R0*Math.sin(pa);cam.position.set(cx+Math.sin(yaw)*hr,hh,p.z*.8+Math.cos(yaw)*hr);cam.lookAt(cx,Math.max(0,1.2*(1-zoom))+Math.max(0,.7854-pa)*1.6,p.z*.8)}
  [P,NPC].forEach(C=>{C.lb.style.display=(C===NPC&&NPC.zn!==zone)?'none':'';const v=C.g.position.clone();v.y+=2.55;v.project(cam);C.lb.style.left=(v.x*.5+.5)*innerWidth+'px';C.lb.style.top=(-v.y*.5+.5)*innerHeight+'px'});
  R.render(S,cam)}
 upd();
@@ -581,7 +581,7 @@ let ylast=performance.now();
  if(tgt){const p=P.g.position,wx=tgt.x-p.x,wz=tgt.z-p.z,d=Math.hypot(wx,wz);tgt.t+=dt;
   if(d<tgt.r||(!tgt.hold&&tgt.t>7)){const f=tgt.then;if(!tgt.hold||d<tgt.r){if(!tgt.hold)tgt=null;else if(d<tgt.r){/*hold: 도착 시 정지*/}}if(f)f()}
   else{const cy=Math.cos(yaw),sy=Math.sin(yaw);keys.ax=(wx*cy-wz*sy)/d;keys.az=(wx*sy+wz*cy)/d}}
- const ty=(zone===1&&P.g.position.x<X0-6.5)?1.0:0;yaw+=(ty-yaw)*Math.min(1,dt*3)})();
+ const ty=((zone===1&&P.g.position.x<X0-6.5)?1.0:0)+(window.CAMU||0);yaw+=(ty-yaw)*Math.min(1,dt*5)})();
 setTimeout(()=>{if(P)toast('화면을 꾹 누르면 그쪽으로 걸어가요 · 의자·음식·낙서 벽은 톡 눌러 보세요')},2500);
 /* ===== 5. 실내 술집 디테일: 때탄 벽, 걸레받이, 천장 배관·형광등, 스티커, 소주 박스 ===== */
 (()=>{const c=document.createElement('canvas');c.width=1408;c.height=256;const x=c.getContext('2d');let s=5;const r=()=>(s=(s*16807)%2147483647)/2147483647;
@@ -1090,6 +1090,44 @@ window.NETBUBBLE=(uid,text)=>{
   b.textContent=text; b.style.display='block'; clearTimeout(r.C.bt); r.C.bt=setTimeout(()=>b.style.display='none',4200);
 };
 boot();
+})();
+</script>
+
+<script>
+/* ===== 두 손가락으로 시점 조절: 좌우로 밀기=회전, 위아래로 밀기=각도, 벌리기/오므리기=확대(기존) ===== */
+(()=>{
+window.CAMU=0; window.CAMP=Math.PI/4;
+const cv=document.getElementById('c'); if(!cv)return;
+const pts=new Map(); let pm=null, t0=0, moved=0, hinted=false;
+const mid=()=>{const a=[...pts.values()];return{x:(a[0].x+a[1].x)/2,y:(a[0].y+a[1].y)/2,d:Math.hypot(a[0].x-a[1].x,a[0].y-a[1].y)}};
+cv.addEventListener('pointerdown',e=>{
+  pts.set(e.pointerId,{x:e.clientX,y:e.clientY});
+  if(pts.size===2){pm=mid();t0=performance.now();moved=0}
+  else pm=null;
+});
+cv.addEventListener('pointermove',e=>{
+  const o=pts.get(e.pointerId); if(!o)return;
+  o.x=e.clientX;o.y=e.clientY;
+  if(pts.size!==2||!pm)return;
+  const m=mid(), dx=m.x-pm.x, dy=m.y-pm.y;
+  moved+=Math.abs(dx)+Math.abs(dy)+Math.abs(m.d-pm.d);
+  window.CAMU-=dx*.008;
+  window.CAMP=Math.max(.22,Math.min(1.25,window.CAMP+dy*.006));
+  pm=m;
+});
+const end=e=>{
+  if(pts.size===2&&performance.now()-t0<250&&moved<8){window.CAMU=0;window.CAMP=Math.PI/4}   // 두 손가락 톡 = 원래 시점
+  pts.delete(e.pointerId); pm=null;
+};
+['pointerup','pointercancel','pointerleave'].forEach(n=>cv.addEventListener(n,end));
+/* 마우스(컴퓨터): 오른쪽 버튼 누르고 끌기 */
+let rd=null;
+cv.addEventListener('mousedown',e=>{if(e.button===2)rd={x:e.clientX,y:e.clientY}});
+addEventListener('mousemove',e=>{if(!rd)return;window.CAMU-=(e.clientX-rd.x)*.008;window.CAMP=Math.max(.22,Math.min(1.25,window.CAMP+(e.clientY-rd.y)*.006));rd={x:e.clientX,y:e.clientY}});
+addEventListener('mouseup',()=>{rd=null});
+/* 처음 한 번 안내 */
+const hint=()=>{ if(hinted)return; if(typeof P!=='undefined'&&P&&typeof toast==='function'){hinted=true;setTimeout(()=>toast('두 손가락으로 좌우·위아래로 밀면 시점이 돌아가요 · 두 손가락으로 톡 치면 원래대로'),7000)} else setTimeout(hint,1000) };
+hint();
 })();
 </script>
 </body></html>
