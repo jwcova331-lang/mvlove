@@ -996,7 +996,7 @@ w.append(b,f);l.after(w)}catch(e){console.error(e)}})();
 const SEND_MS=800, HEARTBEAT_MS=40000, STALE_MS=90000;
 const R={};            // uid -> {C, tx,tz,ty,try_, sit, zn, ts, lk}
 const PD={};           // uid -> 상대 문서 전체 (음식 동기화용)
-let dn=0, lastDsh='', prevRemote=new Set(); const ignored=new Set();
+let dn=0, lastDsh='', prevRemote=new Set(), ownCount=0, werr=''; const ignored=new Set();
 let db=null, me=null, started=false;
 const sig=o=>JSON.stringify(o);
 
@@ -1020,7 +1020,7 @@ function start(){
     const moved=Math.hypot(p.x-last.x,p.z-last.z)>.12 || Math.abs(P.ry-last.ry)>.4 || !!P.sit!==last.sit || zone!==last.zn;
     const lk=sig(look());
     const lookChanged=lk!==lastLook || P!==lastP;
-    const dl=ownDishes(), ds=sig(dl), dshChanged=ds!==lastDsh;
+    const dl=ownDishes(), ds=sig(dl), dshChanged=ds!==lastDsh; ownCount=dl.length;
     if(!moved && !lookChanged && !dshChanged && now-lastSend<HEARTBEAT_MS)return;   // (음식은 변화가 있을 때와 20초마다 보냄)
     const np=Object.keys(R).length, gap=np<=10?700:np<=25?1200:2000;   // 사람이 많을수록 덜 자주 보냄
     if(now-lastSend<gap)return;
@@ -1028,7 +1028,7 @@ function start(){
     const data={nick,ts:now,x:+p.x.toFixed(2),y:+p.y.toFixed(2),z:+p.z.toFixed(2),ry:+P.ry.toFixed(2),sit:!!P.sit,zn:zone,gone:false};
     if(lookChanged){data.lk=lk;lastLook=lk;lastP=P}
     if(dshChanged||now-lastDshSend>20000){data.dsh=dl;lastDsh=ds;lastDshSend=now}
-    db.doc('players/'+me).set(data,{merge:true}).catch(()=>{});
+    db.doc('players/'+me).set(data,{merge:true}).then(()=>{werr=''}).catch(e=>{werr='저장:'+String((e&&(e.code||e.message))||e).slice(0,28)});
   },400);
   /* 앱을 내리면 '자리 비움' 처리 */
   document.addEventListener('visibilitychange',()=>{ if(document.hidden&&db&&me) db.doc('players/'+me).set({gone:true},{merge:true}).catch(()=>{}); else {lastSend=0} });
@@ -1044,7 +1044,7 @@ function start(){
       if(typeof x.x!=='number'||!x.lk)return;   // 아직 위치/외형이 없는 옛 데이터
       upsert(id,x);
     });
-  },e=>console.error('players listen',e));
+  },e=>{console.error('players listen',e);werr='읽기:'+String((e&&(e.code||e.message))||e).slice(0,28)});
 
   /* 접속자 안내 칩: 같은 공간에 몇 명, 다른 공간에 누가 있는지 */
   const chip=document.createElement('div');
@@ -1054,7 +1054,9 @@ function start(){
   setInterval(()=>{
     const now=Date.now(); let here=0; const other=[];
     Object.keys(R).forEach(id=>{const r=R[id]; if(r.gone||now-r.ts>STALE_MS)return; if(r.zn===zone)here++; else other.push((r.C.nm||'손님')+'('+(ZNM[r.zn]||'?')+')')});
-    chip.textContent='👥 이 공간 '+(here+1)+'명'+(other.length?' · 다른 공간: '+other.slice(0,3).join(', ')+(other.length>3?' 외 '+(other.length-3)+'명':''):'');
+    chip.textContent='👥 이 공간 '+(here+1)+'명'+(other.length?' · 다른 공간: '+other.slice(0,3).join(', ')+(other.length>3?' 외 '+(other.length-3)+'명':''):'')
+    let rec=0; Object.keys(PD).forEach(id=>{const x=PD[id]; if(x&&!x.gone&&now-(x.ts||0)<STALE_MS&&Array.isArray(x.dsh))rec+=x.dsh.length});
+    chip.textContent+=(werr?' · ⚠ '+werr:'')+' · 🍽 내 '+ownCount+' / 받은기록 '+rec+' / 표시 '+prevRemote.size;
   },1000);
   requestAnimationFrame(tick);
   setInterval(()=>{try{syncDishes()}catch(e){console.error('dish sync',e)}},700);
