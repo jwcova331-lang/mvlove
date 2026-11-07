@@ -995,6 +995,8 @@ w.append(b,f);l.after(w)}catch(e){console.error(e)}})();
 (()=>{
 const SEND_MS=800, HEARTBEAT_MS=40000, STALE_MS=90000;
 const R={};            // uid -> {C, tx,tz,ty,try_, sit, zn, ts, lk}
+const PD={};           // uid -> 상대 문서 전체 (음식 동기화용)
+let dn=0, lastDsh='', prevRemote=new Set(); const ignored=new Set();
 let db=null, me=null, started=false;
 const sig=o=>JSON.stringify(o);
 
@@ -1018,12 +1020,16 @@ function start(){
     const moved=Math.hypot(p.x-last.x,p.z-last.z)>.12 || Math.abs(P.ry-last.ry)>.4 || !!P.sit!==last.sit || zone!==last.zn;
     const lk=sig(look());
     const lookChanged=lk!==lastLook || P!==lastP;
-    if(!moved && !lookChanged && now-lastSend<HEARTBEAT_MS)return;
+    const dl=ownDishes(), ds=sig(dl), dshChanged=ds!==lastDsh;
+    if(!moved && !lookChanged && !dshChanged && now-lastSend<HEARTBEAT_MS)return;
+    const np=Object.keys(R).length, gap=np<=10?700:np<=25?1200:2000;   // 사람이 많을수록 덜 자주 보냄
+    if(now-lastSend<gap)return;
     lastSend=now; last={x:p.x,z:p.z,ry:P.ry,sit:!!P.sit,zn:zone};
     const data={nick,ts:now,x:+p.x.toFixed(2),y:+p.y.toFixed(2),z:+p.z.toFixed(2),ry:+P.ry.toFixed(2),sit:!!P.sit,zn:zone,gone:false};
     if(lookChanged){data.lk=lk;lastLook=lk;lastP=P}
+    if(dshChanged){data.dsh=dl;lastDsh=ds}
     db.doc('players/'+me).set(data,{merge:true}).catch(()=>{});
-  },SEND_MS);
+  },400);
   /* 앱을 내리면 '자리 비움' 처리 */
   document.addEventListener('visibilitychange',()=>{ if(document.hidden&&db&&me) db.doc('players/'+me).set({gone:true},{merge:true}).catch(()=>{}); else {lastSend=0} });
   addEventListener('pagehide',()=>{ if(db&&me) db.doc('players/'+me).set({gone:true},{merge:true}).catch(()=>{}) });
@@ -1032,14 +1038,63 @@ function start(){
   db.collection('players').where('ts','>',Date.now()-120000).onSnapshot(s=>{
     s.docChanges().forEach(ch=>{
       const id=ch.doc.id; if(id===me)return;
-      if(ch.type==='removed'){drop(id);return}
+      if(ch.type==='removed'){drop(id);delete PD[id];return}
       const x=ch.doc.data()||{};
+      PD[id]=x;
       if(typeof x.x!=='number'||!x.lk)return;   // 아직 위치/외형이 없는 옛 데이터
       upsert(id,x);
     });
   },e=>console.error('players listen',e));
   requestAnimationFrame(tick);
+  setInterval(()=>{try{syncDishes()}catch(e){console.error('dish sync',e)}},700);
   setInterval(()=>{ const n=Date.now(); Object.keys(R).forEach(id=>{ if(n-R[id].ts>STALE_MS||R[id].gone)hide(id,true) }) },3000);
+}
+
+/* ---- 테이블 음식 공유 ---- */
+function ownDishes(){
+  const out=[];
+  TB.forEach((t,ti)=>t.sl.forEach((sl,si)=>{
+    const d=sl.it; if(!d)return;
+    if(!d.nid&&!d.rid)d.nid=me+'-'+(++dn)+'-'+Date.now().toString(36);
+    out.push({i:d.nid||d.rid,ti,si,k:d.m.k,l:d.left});
+  }));
+  return out;
+}
+function applyLeft(d,l){ let g=20; while(d.left>l&&g-->0)bite(d) }
+function syncDishes(){
+  const now=Date.now(), eff={};
+  Object.keys(PD).forEach(uid=>{
+    const x=PD[uid]; if(!x||!Array.isArray(x.dsh))return;
+    if(now-(x.ts||0)>STALE_MS||x.gone)return;
+    x.dsh.forEach(r=>{
+      if(!r||typeof r.i!=='string'||typeof r.l!=='number')return;
+      const own=r.i.startsWith(uid+'-'), e=eff[r.i];
+      if(!e)eff[r.i]={i:r.i,ti:r.ti,si:r.si,k:r.k,l:r.l,own};
+      else{e.l=Math.min(e.l,r.l);if(own){e.ti=r.ti;e.si=r.si;e.k=r.k;e.own=true}}
+    });
+  });
+  const here={};
+  TB.forEach((t,ti)=>t.sl.forEach((sl,si)=>{const d=sl.it;if(d){const id=d.nid||d.rid;if(id)here[id]={d,sl}}}));
+  prevRemote.forEach(id=>{ if(!here[id])ignored.add(id) });   // 직원이 치워서 사라진 접시는 다시 안 띄움
+  Object.keys(here).forEach(id=>{
+    const h=here[id],e=eff[id];
+    if(h.d.rid){
+      if(!e||!e.own){ try{h.sl.p.remove(h.d.g)}catch(_){} h.sl.it=null; return }   // 주인이 나감
+      if(e.l<h.d.left)applyLeft(h.d,e.l);
+    }else if(e&&e.l<h.d.left)applyLeft(h.d,e.l);   // 내 음식을 다른 사람이 먹은 경우
+  });
+  Object.keys(eff).forEach(id=>{
+    const e=eff[id];
+    if(!e.own||here[id]||ignored.has(id)||e.l<=0)return;
+    const m=MENU.find(m=>m.k===e.k), t=TB[e.ti]; if(!m||!t)return;
+    const eat=m.t==='eat', ok=(x,k)=>!x.it&&(eat?k<3:k>=3);
+    let sl=t.sl[e.si]; if(!(sl&&ok(sl,e.si)))sl=t.sl.find((x,k)=>ok(x,k));
+    if(!sl)return;
+    const d=mkDish(m); d.rid=id; applyLeft(d,e.l);
+    d.g.scale.setScalar(eat?.78:1); d.g.position.set(0,0,0); sl.p.add(d.g); sl.it=d;
+  });
+  prevRemote=new Set();
+  TB.forEach(t=>t.sl.forEach(sl=>{if(sl.it&&sl.it.rid)prevRemote.add(sl.it.rid)}));
 }
 
 function upsert(id,x){
@@ -1053,6 +1108,7 @@ function upsert(id,x){
     r={C,lk:seenLook,px:x.x,pz:x.z,mv:false};
     R[id]=r; C.g.position.set(x.x,x.y||0,x.z); C.ry=x.ry||0; C.g.rotation.y=C.ry;
   }
+  {const nw=Date.now();if(r.lu){const g=Math.min(2500,nw-r.lu);r.gap=r.gap?r.gap*.7+g*.3:g}r.lu=nw}
   r.tx=x.x; r.tz=x.z; r.ty=x.y||0; r.try_=x.ry||0; r.sit=!!x.sit; r.zn=x.zn; r.ts=x.ts||Date.now(); r.gone=!!x.gone;
   if(r.C.nm!==(x.nick||'손님').slice(0,8)){r.C.nm=(x.nick||'손님').slice(0,8);r.C.lb.lastChild.textContent=r.C.nm}
   if(!r.gone)show(id);
@@ -1062,24 +1118,26 @@ function drop(id){ const r=R[id]; if(!r)return; kill(r); delete R[id] }
 function hide(id,rm){ const r=R[id]; if(!r)return; if(rm){drop(id);return} r.C.g.visible=false; r.C.lb.style.display='none' }
 function show(id){ const r=R[id]; if(r){r.C.g.visible=true} }
 
-let lt=performance.now();
+let lt=performance.now(), allow=null, allowT=0;
 function tick(){
   requestAnimationFrame(tick);
   const n=performance.now(), dt=Math.min((n-lt)/1000,.05); lt=n;
-  Object.keys(R).forEach(id=>{
+  const pp=P.g.position, ids=Object.keys(R);
+  if(n-allowT>500){allowT=n;allow=ids.length>30?new Set(ids.map(id=>{const q=R[id].C.g.position;return[id,(q.x-pp.x)**2+(q.z-pp.z)**2]}).sort((a,b)=>a[1]-b[1]).slice(0,30).map(a=>a[0])):null}
+  ids.forEach(id=>{
     const r=R[id], C=r.C, p=C.g.position;
-    const vis=(r.zn===zone)&&!r.gone;
+    const vis=(r.zn===zone)&&!r.gone&&(!allow||allow.has(id));
     C.g.visible=vis; C.lb.style.display=vis?'':'none';
     if(!vis)return;
     const dx=r.tx-p.x, dz=r.tz-p.z, d=Math.hypot(dx,dz);
     if(d>6){p.x=r.tx;p.z=r.tz}                 // 너무 멀면 순간이동
-    else{const k=Math.min(1,dt*6);p.x+=dx*k;p.z+=dz*k}
+    else{const k=Math.min(1,dt*Math.max(1.5,Math.min(8,4500/Math.max(500,r.gap||800))));p.x+=dx*k;p.z+=dz*k}
     p.y+=(r.ty-p.y)*Math.min(1,dt*10);
     const moving=d>.15&&!r.sit;
     let a=(moving?Math.atan2(dx,dz):r.try_);
     let dr=a-C.g.rotation.y; dr=Math.atan2(Math.sin(dr),Math.cos(dr)); C.g.rotation.y+=dr*Math.min(1,dt*10);
     C.sit=r.sit; if(moving)C.ph+=dt*11;
-    try{pose(C,dt,moving)}catch(e){}
+    if((p.x-pp.x)**2+(p.z-pp.z)**2<484){try{pose(C,dt,moving)}catch(e){}}   // 22칸 넘게 먼 사람은 걷는 동작 생략
     const v=p.clone(); v.y+=2.55; v.project(cam);
     C.lb.style.left=(v.x*.5+.5)*innerWidth+'px'; C.lb.style.top=(-v.y*.5+.5)*innerHeight+'px';
   });
